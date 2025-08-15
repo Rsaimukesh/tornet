@@ -12,9 +12,8 @@ import subprocess
 import signal
 import platform
 import random
-from .utils import install_pip, install_requests, install_tor
-from .banner import print_banner
-
+from utils import install_pip, install_requests, install_tor
+from banner import print_banner
 TOOL_NAME = "tornet"
 
 green = "\033[92m"
@@ -115,8 +114,11 @@ def change_ip():
     reload_tor_service()
     return ma_ip()
 
-def change_ip_repeatedly(interval: str, count):
-    if count == 0: # null
+def change_ip_repeatedly(interval, count):
+    if isinstance(interval, int):
+        interval = str(interval)  # Convert integer to string for consistency
+
+    if count == 0:  # null
         while True:
             try:
                 inte = interval.split("-")
@@ -184,6 +186,17 @@ def check_internet_connection():
             print(f"{white} [{red}!{white}] {red}Internet connection lost. Please check your internet connection.{reset}")
             return False
 
+def update_torrc_with_countries(countries):
+    torrc_path = "/etc/tor/torrc"
+    try:
+        with open(torrc_path, "a") as torrc:
+            torrc.write("\n# Tornet dynamic configuration\n")
+            torrc.write("ExitNodes " + ",".join(countries) + "\n")
+            torrc.write("StrictNodes 1\n")
+        print(f"{white} [{green}+{white}]{green} Tor configuration updated with countries: {white}{','.join(countries)}{reset}")
+    except Exception as e:
+        print(f"{white} [{red}!{white}] {red}Error updating Tor configuration: {str(e)}{reset}")
+
 def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGQUIT, signal_handler)
@@ -194,6 +207,7 @@ def main():
     parser.add_argument('--ip', action='store_true', help='Display the current IP address and exit')
     parser.add_argument('--auto-fix', action='store_true', help='Automatically fix issues (install/upgrade packages)')
     parser.add_argument('--stop', action='store_true', help='Stop all Tor services and tornet processes and exit')
+    parser.add_argument('--countries', type=str, help='Comma-separated list of country codes for exit nodes (e.g., us,de,fr)')
     parser.add_argument('--version', action='version', version='%(prog)s 2.0.0')
     args = parser.parse_args()
 
@@ -215,6 +229,18 @@ def main():
     if args.stop:
         stop_services()
         return
+
+    # Randomly select a country if no countries are provided
+    predefined_countries = ['us', 'de', 'fr', 'nl', 'ca']
+    if not args.countries:
+        selected_country = random.choice(predefined_countries)
+        update_torrc_with_countries([selected_country])
+        print(f"Randomly selected country: {selected_country}")
+    else:
+        countries = args.countries.split(',')
+        update_torrc_with_countries(countries)
+
+    reload_tor_service()
 
     print_banner()
     initialize_environment()

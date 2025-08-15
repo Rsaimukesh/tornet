@@ -53,6 +53,21 @@ def install_tor():
             subprocess.check_output('sudo apt install tor -y', shell=True)
             print("tor installed successfully.")
 
+def update_torrc_with_countries(countries):
+    """
+    Update the torrc file to specify exit nodes for the given countries.
+
+    :param countries: A list of country codes (e.g., ['us', 'de', 'fr'])
+    """
+    torrc_path = "/etc/tor/torrc"
+    exit_nodes = ",".join([f"{{{country}}}" for country in countries])
+    try:
+        with open(torrc_path, "a") as torrc_file:
+            torrc_file.write(f"\nExitNodes {exit_nodes}\nStrictNodes 1\n")
+        print(f"Updated torrc with countries: {', '.join(countries)}")
+    except PermissionError:
+        print("Permission denied: Please run the program with sudo to modify the torrc file.")
+
 if __name__ == "__main__":
     install_pip()
     install_requests()
