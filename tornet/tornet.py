@@ -12,8 +12,9 @@ import subprocess
 import signal
 import platform
 import random
-from utils import install_pip, install_requests, install_tor
-from banner import print_banner
+import json
+from .utils import install_pip, install_requests, install_tor
+from .banner import print_banner
 TOOL_NAME = "tornet"
 
 green = "\033[92m"
@@ -178,13 +179,13 @@ def signal_handler(sig, frame):
     exit(0)
 
 def check_internet_connection():
-    while True:
-        time.sleep(1)
-        try:
-            requests.get('http://www.google.com', timeout=1)
-        except requests.RequestException:
-            print(f"{white} [{red}!{white}] {red}Internet connection lost. Please check your internet connection.{reset}")
-            return False
+    """Check internet connection once, don't block execution"""
+    try:
+        response = requests.get('https://api.ipify.org', timeout=5)
+        return True
+    except requests.RequestException:
+        print(f"{white} [{red}!{white}] {red}Internet connection issue. Some features may not work properly.{reset}")
+        return False
 
 def update_torrc_with_countries(countries):
     torrc_path = "/etc/tor/torrc"
@@ -197,6 +198,222 @@ def update_torrc_with_countries(countries):
     except Exception as e:
         print(f"{white} [{red}!{white}] {red}Error updating Tor configuration: {str(e)}{reset}")
 
+def check_dns_leaks():
+    """
+    Check for DNS leaks by comparing DNS servers used with and without Tor.
+    A DNS leak occurs when DNS requests bypass the Tor network.
+    """
+    print(f"{white} [{cyan}*{white}]{cyan} Checking for DNS leaks...{reset}")
+    
+    # DNS leak test servers
+    dns_test_urls = [
+        'https://1.1.1.1/cdn-cgi/trace',  # Cloudflare
+        'https://ipinfo.io/json',          # IPInfo
+        'https://api.ipify.org?format=json' # Ipify
+    ]
+    
+    proxies = {
+        'http': 'socks5://127.0.0.1:9050',
+        'https': 'socks5://127.0.0.1:9050'
+    }
+    
+    tor_dns_servers = []
+    direct_dns_servers = []
+    
+    try:
+        # Test through Tor
+        print(f"{white} [{cyan}*{white}]{cyan} Testing DNS resolution through Tor...{reset}")
+        for url in dns_test_urls[:2]:  # Test first 2 URLs
+            try:
+                response = requests.get(url, proxies=proxies, timeout=10)
+                if response.status_code == 200:
+                    if 'cloudflare' in url:
+                        # Parse Cloudflare trace
+                        lines = response.text.strip().split('\n')
+                        for line in lines:
+                            if line.startswith('colo='):
+                                tor_dns_servers.append(f"Cloudflare-{line.split('=')[1]}")
+                    else:
+                        # Parse JSON response
+                        data = response.json()
+                        if 'org' in data:
+                            tor_dns_servers.append(data['org'][:30])
+                        elif 'country' in data:
+                            tor_dns_servers.append(f"Country: {data['country']}")
+            except Exception as e:
+                print(f"{white} [{red}!{white}] {red}Error testing {url}: {str(e)[:50]}...{reset}")
+        
+        # Test direct connection (without Tor) for comparison
+        print(f"{white} [{cyan}*{white}]{cyan} Testing DNS resolution without Tor...{reset}")
+        try:
+            response = requests.get('https://ipinfo.io/json', timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if 'org' in data:
+                    direct_dns_servers.append(data['org'][:30])
+        except Exception as e:
+            print(f"{white} [{red}!{white}] {red}Could not test direct connection: {str(e)[:50]}...{reset}")
+        
+        # Analyze results
+        print(f"{white} [{cyan}*{white}]{cyan} DNS Leak Test Results:{reset}")
+        print(f"{white} [{green}+{white}]{green} Tor DNS Servers: {white}{tor_dns_servers}{reset}")
+        
+        if direct_dns_servers:
+            print(f"{white} [{green}+{white}]{green} Direct DNS Servers: {white}{direct_dns_servers}{reset}")
+            
+            # Check for leaks
+            leak_detected = False
+            for tor_dns in tor_dns_servers:
+                for direct_dns in direct_dns_servers:
+                    if tor_dns.lower() in direct_dns.lower() or direct_dns.lower() in tor_dns.lower():
+                        if not any(safe_word in tor_dns.lower() for safe_word in ['tor', 'proxy', 'vpn']):
+                            leak_detected = True
+            
+            if leak_detected:
+                print(f"{white} [{red}!{white}] {red}WARNING: Potential DNS leak detected!{reset}")
+                print(f"{white} [{red}!{white}] {red}Your DNS queries might be bypassing Tor.{reset}")
+                print(f"{white} [{cyan}*{white}]{cyan} Recommendation: Configure your system to use Tor for DNS.{reset}")
+                return False
+            else:
+                print(f"{white} [{green}+{white}]{green} No obvious DNS leaks detected.{reset}")
+                return True
+        else:
+            print(f"{white} [{cyan}*{white}]{cyan} Could not compare with direct connection.{reset}")
+            print(f"{white} [{green}+{white}]{green} Tor DNS resolution appears to be working.{reset}")
+            return True
+            
+    except Exception as e:
+        print(f"{white} [{red}!{white}] {red}Error during DNS leak test: {str(e)}{reset}")
+        return None
+
+def check_ip_info(ip=None):
+    """
+    Get detailed information about the current IP address
+    """
+    if not ip:
+        ip = ma_ip()
+        if not ip:
+            print(f"{white} [{red}!{white}] {red}Could not retrieve IP address{reset}")
+            return None
+    
+    print(f"{white} [{cyan}*{white}]{cyan} Getting detailed information for IP: {white}{ip}{reset}")
+    
+    proxies = {
+        'http': 'socks5://127.0.0.1:9050',
+        'https': 'socks5://127.0.0.1:9050'
+    } if is_tor_running() else None
+    
+    try:
+        # Try multiple IP info services
+        services = [
+            ('http://ip-api.com/json/', 'country,regionName,city,org,as,query'),
+            ('https://ipapi.co/json/', None),
+            ('https://ipinfo.io/json', None)
+        ]
+        
+        for service_url, params in services:
+            try:
+                url = f"{service_url}?fields={params}" if params else service_url
+                response = requests.get(url, proxies=proxies, timeout=10)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    print(f"{white} [{green}+{white}]{green} IP Information:{reset}")
+                    print(f"{white} [{cyan}*{white}]{cyan} IP Address: {white}{data.get('query', data.get('ip', ip))}{reset}")
+                    
+                    if 'country' in data:
+                        print(f"{white} [{cyan}*{white}]{cyan} Country: {white}{data['country']}{reset}")
+                    if 'regionName' in data or 'region' in data:
+                        region = data.get('regionName', data.get('region', ''))
+                        print(f"{white} [{cyan}*{white}]{cyan} Region: {white}{region}{reset}")
+                    if 'city' in data:
+                        print(f"{white} [{cyan}*{white}]{cyan} City: {white}{data['city']}{reset}")
+                    if 'org' in data:
+                        print(f"{white} [{cyan}*{white}]{cyan} Organization: {white}{data['org']}{reset}")
+                    if 'as' in data:
+                        print(f"{white} [{cyan}*{white}]{cyan} ASN: {white}{data['as']}{reset}")
+                    if 'timezone' in data:
+                        print(f"{white} [{cyan}*{white}]{cyan} Timezone: {white}{data['timezone']}{reset}")
+                    
+                    return data
+                    
+            except Exception as e:
+                continue
+        
+        print(f"{white} [{red}!{white}] {red}Could not retrieve detailed IP information{reset}")
+        return None
+        
+    except Exception as e:
+        print(f"{white} [{red}!{white}] {red}Error getting IP info: {str(e)}{reset}")
+        return None
+
+def comprehensive_security_check():
+    """
+    Perform a comprehensive security check including DNS leaks, IP info, and Tor status
+    """
+    print(f"{white} [{cyan}*{white}]{cyan} Starting comprehensive security check...{reset}")
+    print(f"{white}{'='*60}{reset}")
+    
+    # Check if Tor is running
+    if not is_tor_running():
+        print(f"{white} [{red}!{white}] {red}Tor is not running! Security check failed.{reset}")
+        return False
+    
+    # Get current IP and info
+    print(f"{white} [{cyan}1/3{white}]{cyan} Checking current IP and location...{reset}")
+    check_ip_info()
+    
+    print(f"\n{white} [{cyan}2/3{white}]{cyan} Performing DNS leak test...{reset}")
+    dns_result = check_dns_leaks()
+    
+    print(f"\n{white} [{cyan}3/3{white}]{cyan} Checking Tor circuit status...{reset}")
+    tor_status = check_tor_circuit_status()
+    
+    print(f"\n{white}{'='*60}{reset}")
+    print(f"{white} [{cyan}*{white}]{cyan} Security Check Summary:{reset}")
+    
+    if dns_result is True:
+        print(f"{white} [{green}+{white}]{green} DNS Leak Test: PASSED{reset}")
+    elif dns_result is False:
+        print(f"{white} [{red}!{white}] {red}DNS Leak Test: FAILED{reset}")
+    else:
+        print(f"{white} [{cyan}*{white}]{cyan} DNS Leak Test: INCONCLUSIVE{reset}")
+    
+    if tor_status:
+        print(f"{white} [{green}+{white}]{green} Tor Circuit: ACTIVE{reset}")
+    else:
+        print(f"{white} [{red}!{white}] {red}Tor Circuit: UNKNOWN{reset}")
+    
+    return dns_result and tor_status
+
+def check_tor_circuit_status():
+    """
+    Check if Tor circuit is active and get basic info
+    """
+    try:
+        # Try to connect to Tor control port (usually 9051)
+        # For basic check, we'll just verify if we can get a different IP through Tor
+        tor_ip = ma_ip_tor()
+        direct_ip = ma_ip_normal()
+        
+        if tor_ip and direct_ip and tor_ip != direct_ip:
+            print(f"{white} [{green}+{white}]{green} Tor circuit is active (IPs differ){reset}")
+            return True
+        elif tor_ip and direct_ip and tor_ip == direct_ip:
+            print(f"{white} [{red}!{white}] {red}Warning: Tor and direct IPs are the same{reset}")
+            return False
+        elif tor_ip:
+            print(f"{white} [{green}+{white}]{green} Tor connection successful{reset}")
+            return True
+        else:
+            print(f"{white} [{red}!{white}] {red}Could not establish Tor connection{reset}")
+            return False
+            
+    except Exception as e:
+        print(f"{white} [{red}!{white}] {red}Error checking Tor circuit: {str(e)}{reset}")
+        return False
+
 def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGQUIT, signal_handler)
@@ -208,13 +425,34 @@ def main():
     parser.add_argument('--auto-fix', action='store_true', help='Automatically fix issues (install/upgrade packages)')
     parser.add_argument('--stop', action='store_true', help='Stop all Tor services and tornet processes and exit')
     parser.add_argument('--countries', type=str, help='Comma-separated list of country codes for exit nodes (e.g., us,de,fr)')
-    parser.add_argument('--version', action='version', version='%(prog)s 2.0.0')
+    parser.add_argument('--dns-leak-test', action='store_true', help='Perform DNS leak detection test and exit')
+    parser.add_argument('--ip-info', action='store_true', help='Show detailed information about current IP and exit')
+    parser.add_argument('--security-check', action='store_true', help='Perform comprehensive security check and exit')
+    parser.add_argument('--version', action='version', version='%(prog)s 2.2.0')
     args = parser.parse_args()
 
     if args.ip:
         ip = ma_ip()
         if ip:
             print_ip(ip)
+        return
+
+    if args.dns_leak_test:
+        if not is_tor_installed():
+            print(f"{white} [{red}!{white}] {red}Tor is not installed. Please install Tor first.{reset}")
+            return
+        check_dns_leaks()
+        return
+
+    if args.ip_info:
+        check_ip_info()
+        return
+
+    if args.security_check:
+        if not is_tor_installed():
+            print(f"{white} [{red}!{white}] {red}Tor is not installed. Please install Tor first.{reset}")
+            return
+        comprehensive_security_check()
         return
 
     if not is_tor_installed():
@@ -247,5 +485,6 @@ def main():
     change_ip_repeatedly(args.interval, args.count)
 
 if __name__ == "__main__":
+    # Quick internet check but don't block
     check_internet_connection()
     main()

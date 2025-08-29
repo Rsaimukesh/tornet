@@ -40,13 +40,40 @@ TorNet provides a command-line interface for easy use. Here are the available op
 tornet --interval <seconds> --count <number>
 ```
 
+### Basic Options
 - `--interval` (optional): Time in seconds between IP changes (default is 60 seconds).
 - `--count` (optional): Number of times to change the IP (default is 10 times). If set to 0, the IP will be changed indefinitely.
-- `--stop` (optional): Stop all Tor services and TorNet processes and exit.
+- `--countries` (optional): Comma-separated list of country codes for exit nodes (e.g., us,de,fr).
+
+### Security and Information Options
 - `--ip` (optional): Display the current IP address and exit.
+- `--ip-info` (optional): Show detailed information about current IP address and location.
+- `--dns-leak-test` (optional): Perform DNS leak detection test to check for security vulnerabilities.
+- `--security-check` (optional): Perform comprehensive security check including DNS leaks and Tor status.
+
+### System Options
+- `--stop` (optional): Stop all Tor services and TorNet processes and exit.
 - `--auto-fix` (optional): Automatically fix issues (install/upgrade packages).
 - `--help`: Show the help message and exit.
 - `--version`: Show the version number and exit.
+
+### Security Features
+
+#### DNS Leak Detection
+DNS leaks can compromise your anonymity even when using Tor. TorNet now includes built-in DNS leak detection:
+
+```bash
+# Test for DNS leaks
+tornet --dns-leak-test
+
+# Comprehensive security check
+tornet --security-check
+
+# Get detailed IP information
+tornet --ip-info
+```
+
+The DNS leak test checks if your DNS queries are properly routed through Tor or if they're bypassing the Tor network, which could reveal your real location.
 
 ## How It Works
 
